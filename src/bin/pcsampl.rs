@@ -4,12 +4,18 @@ use core::cmp::Ordering;
 use std::{
     collections::HashMap,
     fs::{self, File},
+    // fmt,
 };
+
+use std::io::{Read, BufReader, BufRead};
 
 use clap::{App, Arg};
 use exitfailure::ExitFailure;
 use failure::bail;
-use itm::{Packet, Stream};
+use itm::{Packet::PeriodicPcSample, Stream};
+
+use itm::packet::PeriodicPcSample as PeriodicPcSampleType;
+
 use xmas_elf::{
     sections::SectionData,
     symbol_table::{Entry, Type},
@@ -18,6 +24,20 @@ use xmas_elf::{
 
 fn main() -> Result<(), ExitFailure> {
     run().map_err(|e| e.into())
+}
+
+// Refactor function to read pc samples
+fn read_pc_samples<R:Read> (s: &mut Stream<R>) -> 
+    Result<Vec<PeriodicPcSampleType>, std::io::Error>{
+    let mut samples = vec![];
+    while let Some(res) = s.next()? {
+        match res {
+            Ok(PeriodicPcSample(pps)) => samples.push(pps),
+            Ok(_) => {} // don't care
+            Err(e) => eprintln!("{:?}", e),
+        }
+    }
+    Ok(samples)
 }
 
 fn run() -> Result<(), failure::Error> {
@@ -36,19 +56,28 @@ fn run() -> Result<(), failure::Error> {
                 .required(true)
                 .index(1),
         )
+        // 20220527 Y.D. New arguments
+        .arg(
+            Arg::with_name("MAP_WITH_OBJDUMP")
+                .help("Map program counter (pc) to the instructions with objdump's")
+                .short("m")
+                .required(false)
+                .takes_value(true)
+            ) 
+        .arg(
+            Arg::with_name("OUTPUT_FILE")
+                .help("Output for the process result")
+                .short("o")
+                .required(false)
+                .takes_value(true)
+            )
         .get_matches();
 
     // collect samples
-    let mut stream = Stream::new(File::open(matches.value_of("FILE").unwrap())?, false);
-
-    let mut samples = vec![];
-    while let Some(res) = stream.next()? {
-        match res {
-            Ok(Packet::PeriodicPcSample(pps)) => samples.push(pps),
-            Ok(_) => {} // don't care
-            Err(e) => eprintln!("{:?}", e),
-        }
-    }
+    let itm_name = matches.value_of("FILE").unwrap();
+    // let itm_file = File::open(matches.value_of("FILE").unwrap())?;
+    let mut stream = Stream::new(File::open(itm_name)?, false);
+    let samples = read_pc_samples(&mut stream)?;
 
     // extract routines from the ELF file
     let data = fs::read(matches.value_of("elf").unwrap())?;
@@ -90,6 +119,7 @@ fn run() -> Result<(), failure::Error> {
     let min_pc = routines[0].address;
     let mut total = samples.len();
     let mut sleep = 0; // sleep cycles
+
     for sample in samples {
         if let Some(pc) = sample.pc().map(u64::from) {
             if pc < min_pc {
@@ -134,6 +164,72 @@ fn run() -> Result<(), failure::Error> {
 
     println!("-----\n 100% {} samples", total);
 
+    stream = Stream::new(File::open(itm_name)?, false);
+    let mut sample_table:HashMap<String, String> = HashMap::new();
+    let samples = read_pc_samples(&mut stream)?;
+
+    for sample in samples {
+        if let Some(pc) = sample.pc() {
+            sample_table.insert(
+                format!("{pc:x}" ), "".to_string());
+        }
+    }
+    
+    if let Some(x) = matches.value_of("MAP_WITH_OBJDUMP") {
+
+        let objdump = BufReader::new(File::open(x)?);
+
+        for line in objdump.lines() {
+
+            let s = String::from(line.unwrap());
+            let s = s.trim();
+            let split:Vec<&str> = s.split("\t").collect();
+            if split[0].len() >= 8 {
+
+            let offset = &split[0][0..7];
+
+                if sample_table.contains_key(offset) {
+
+                    *sample_table
+                        .entry(offset.to_string())
+                        .or_insert(String::from("None")) = split[2..].join(" ");
+               
+                }        
+            } else {
+                continue
+            }
+        }
+    }
+
+    // let objdump = BufReader::new(
+    //     File::open(matches.value_of("MAP_WITH_OBJDUMP").unwrap())?);
+    
+    // for line in objdump.lines() {
+
+    //     let s = String::from(line.unwrap());
+    //     let s = s.trim();
+    //     let split:Vec<&str> = s.split("\t").collect();
+
+    //     if split[0].len() >= 8 {
+
+    //         let offset = &split[0][0..7];
+
+    //         if sample_table.contains_key(offset) {
+
+    //             *sample_table
+    //                 .entry(offset.to_string())
+    //                 .or_insert(String::from("None")) = split[2..].join(" ");
+               
+    //         }        
+    //     } else {
+    //         continue
+    //     }
+    // }
+
+    println!("{:?}", sample_table);
+
+    
+
     Ok(())
 }
 
@@ -161,3 +257,5 @@ impl<'a> PartialEq for Routine<'a> {
         self.address == other.address
     }
 }
+
+// Match instruction with PC samples.
