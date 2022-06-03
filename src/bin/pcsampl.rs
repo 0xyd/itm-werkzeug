@@ -7,7 +7,11 @@ use std::{
     // fmt,
 };
 
-use std::io::{Read, BufReader, BufRead};
+use std::io::{
+    BufReader, 
+    BufRead, 
+    Write
+};
 
 use clap::{App, Arg};
 use exitfailure::ExitFailure;
@@ -27,10 +31,14 @@ fn main() -> Result<(), ExitFailure> {
 }
 
 // Refactor function to read pc samples
-fn read_pc_samples<R:Read> (s: &mut Stream<R>) -> 
-    Result<Vec<PeriodicPcSampleType>, std::io::Error>{
+fn read_pc_samples(itm_name: &str) -> 
+    Result<Vec<PeriodicPcSampleType>, std::io::Error> {
+
+    let mut stream = Stream::new(
+        File::open(itm_name)?, false);
     let mut samples = vec![];
-    while let Some(res) = s.next()? {
+
+    while let Some(res) = stream.next()? {
         match res {
             Ok(PeriodicPcSample(pps)) => samples.push(pps),
             Ok(_) => {} // don't care
@@ -39,6 +47,18 @@ fn read_pc_samples<R:Read> (s: &mut Stream<R>) ->
     }
     Ok(samples)
 }
+// fn read_pc_samples<R:Read> (s: &mut Stream<R>) -> 
+//     Result<Vec<PeriodicPcSampleType>, std::io::Error>{
+//     let mut samples = vec![];
+//     while let Some(res) = s.next()? {
+//         match res {
+//             Ok(PeriodicPcSample(pps)) => samples.push(pps),
+//             Ok(_) => {} // don't care
+//             Err(e) => eprintln!("{:?}", e),
+//         }
+//     }
+//     Ok(samples)
+// }
 
 fn run() -> Result<(), failure::Error> {
     let matches = App::new("pcsampl")
@@ -75,9 +95,7 @@ fn run() -> Result<(), failure::Error> {
 
     // collect samples
     let itm_name = matches.value_of("FILE").unwrap();
-    // let itm_file = File::open(matches.value_of("FILE").unwrap())?;
-    let mut stream = Stream::new(File::open(itm_name)?, false);
-    let samples = read_pc_samples(&mut stream)?;
+    let mut samples = read_pc_samples(&itm_name)?;
 
     // extract routines from the ELF file
     let data = fs::read(matches.value_of("elf").unwrap())?;
@@ -120,6 +138,8 @@ fn run() -> Result<(), failure::Error> {
     let mut total = samples.len();
     let mut sleep = 0; // sleep cycles
 
+    let mut sample_table:HashMap<String, String> = HashMap::new();
+
     for sample in samples {
         if let Some(pc) = sample.pc().map(u64::from) {
             if pc < min_pc {
@@ -141,6 +161,9 @@ fn run() -> Result<(), failure::Error> {
             }
 
             *stats.entry(hit.name).or_insert(0) += 1;
+
+            sample_table.insert(
+                format!("{pc:x}"), hit.name.to_string());
         } else {
             sleep += 1;
         }
@@ -164,17 +187,6 @@ fn run() -> Result<(), failure::Error> {
 
     println!("-----\n 100% {} samples", total);
 
-    stream = Stream::new(File::open(itm_name)?, false);
-    let mut sample_table:HashMap<String, String> = HashMap::new();
-    let samples = read_pc_samples(&mut stream)?;
-
-    for sample in samples {
-        if let Some(pc) = sample.pc() {
-            sample_table.insert(
-                format!("{pc:x}" ), "".to_string());
-        }
-    }
-    
     if let Some(x) = matches.value_of("MAP_WITH_OBJDUMP") {
 
         let objdump = BufReader::new(File::open(x)?);
@@ -184,16 +196,21 @@ fn run() -> Result<(), failure::Error> {
             let s = String::from(line.unwrap());
             let s = s.trim();
             let split:Vec<&str> = s.split("\t").collect();
+
             if split[0].len() >= 8 {
 
-            let offset = &split[0][0..7];
+                let offset = &split[0][0..7];
 
                 if sample_table.contains_key(offset) {
 
+                    let key = offset.to_string();
+
                     *sample_table
-                        .entry(offset.to_string())
-                        .or_insert(String::from("None")) = split[2..].join(" ");
-               
+                        .entry(key)
+                        .or_insert(String::from("None")) = format!(
+                            "\t{}\t{}", 
+                            sample_table[&key], 
+                            split[2..].join(" "));
                 }        
             } else {
                 continue
@@ -201,34 +218,20 @@ fn run() -> Result<(), failure::Error> {
         }
     }
 
-    // let objdump = BufReader::new(
-    //     File::open(matches.value_of("MAP_WITH_OBJDUMP").unwrap())?);
-    
-    // for line in objdump.lines() {
+    if let Some(x) = matches.value_of("OUTPUT_FILE"){
 
-    //     let s = String::from(line.unwrap());
-    //     let s = s.trim();
-    //     let split:Vec<&str> = s.split("\t").collect();
+        let mut output = File::create(x)?;
+        samples = read_pc_samples(&itm_name)?;
 
-    //     if split[0].len() >= 8 {
+        for sample in samples {
+            if let Some(pc) = sample.pc() {
+                let key = format!("{pc:x}");
+                write!(output, "{}\t{}\n", key, sample_table[&key])
+                    .ok();
+            }
+        }
+    }
 
-    //         let offset = &split[0][0..7];
-
-    //         if sample_table.contains_key(offset) {
-
-    //             *sample_table
-    //                 .entry(offset.to_string())
-    //                 .or_insert(String::from("None")) = split[2..].join(" ");
-               
-    //         }        
-    //     } else {
-    //         continue
-    //     }
-    // }
-
-    println!("{:?}", sample_table);
-
-    
 
     Ok(())
 }
