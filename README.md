@@ -1,15 +1,6 @@
-This repository is no longer maintained!
-The library on which these tools are based has been deprecated in favor of [rtic-scope/itm].
-You may want to check the tools developed by the [rtic-scope] team.
+# `itm-werkzeug`
 
-[rtic-scope/itm]: https://github.com/rtic-scope/itm
-[rtic-scope]: https://github.com/rtic-scope
-
----
-
-# `itm-tools`
-
-> Tools for analyzing ITM traces.
+The repository is a revision of itm-tools by japaric. Several new features are added to PC sampling for analysis.
 
 <p align="center">
 <img
