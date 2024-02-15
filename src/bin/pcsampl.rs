@@ -111,6 +111,12 @@ fn run() -> Result<(), failure::Error> {
                         let address = entry.value() & !1;
                         let size = entry.size();
 
+                        // These printings are just for debugging.
+                        // eprintln!("happy!");
+                        // eprintln!("address: ({:#010x})", address);
+                        // eprintln!("size: ({})", size);
+                        // eprintln!("name: ({0})", name);
+
                         routines.push(Routine {
                             address,
                             name,
@@ -153,9 +159,17 @@ fn run() -> Result<(), failure::Error> {
             let pos = routines.binary_search(&needle).unwrap_or_else(|e| e - 1);
 
             let hit = &routines[pos];
+            // 20240215:
+            // I found linked functions have no size in the elf file
+            // which cause decoding errors. 
             if pc > hit.address + hit.size {
                 // bogus value; ignore
-                eprintln!("bogus PC ({:#010x})", pc);
+
+                // These printings are just for debugging.
+                // eprintln!("hit.address: ({:#010x})", hit.address);
+                // eprintln!("hit.size: ({})", hit.size);
+                // eprintln!("hit.name: ({0})", hit.name);
+                // eprintln!("bogus PC ({:#010x})", pc);
                 total -= 1;
                 continue;
             }
