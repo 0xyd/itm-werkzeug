@@ -91,32 +91,11 @@ fn run() -> Result<(), failure::Error> {
                 .required(false)
                 .takes_value(true)
             )
-        // 20240216 New Argument
-        // External functions linked by linker 
-        // don't have size attribute in the .symtab of elf file.
-        // Hence, addresses in external functions will always
-        // fail in the case 2. 
-        .arg(
-            Arg::with_name("EXTERNEL_FUNCTIONS")
-                .help("External functions linked to the elf file by linker. The function uses , as delimiter between function names. ")
-                .short("x")
-                // .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                .required(false)
-                .takes_value(true)
-            )
         .get_matches();
 
     // collect samples
     let itm_name = matches.value_of("FILE").unwrap();
     let mut samples = read_pc_samples(&itm_name)?;
-
-    // Read external functions
-    let mut ext_funcs = vec![];
-    if let Some(x) = matches.value_of("EXTERNEL_FUNCTIONS") {
-        for s in x.split(',') {
-            ext_funcs.push(s);
-        }
-    }
 
     // extract routines from the ELF file
     let data = fs::read(matches.value_of("elf").unwrap())?;
@@ -163,9 +142,6 @@ fn run() -> Result<(), failure::Error> {
 
     for sample in samples {
         if let Some(pc) = sample.pc().map(u64::from) {
-
-            // Failure case 1:
-            // PC is lower than elf address.
             if pc < min_pc {
                 // bogus value; ignore
                 eprintln!("bogus PC ({:#010x})", pc);
@@ -177,37 +153,12 @@ fn run() -> Result<(), failure::Error> {
             let pos = routines.binary_search(&needle).unwrap_or_else(|e| e - 1);
 
             let hit = &routines[pos];
-
-            // *******
-            // 20240216:
-            // This is upgraded version of the bogus case below.
-            // This case is bogus because the pc is outside the function section.
-            // However,
-            // the original case only does not consider external functions linked by linker
-            // These linked functions have no size information in the symbol table,
-            // thus the bogus state is always trigger.
-            // To address the issue, I add a new argument "EXTERNEL_FUNCTIONS"
-            // in which user can define the names of external functions.
-            // These external functions are excluded from this bogus case.
-            let boundary = hit.address + hit.size;
-            let over_boundary = if pc > boundary {true} else {false};
-
-            if over_boundary && !ext_funcs.contains(&hit.name) {
+            if pc > hit.address + hit.size {
                 // bogus value; ignore
+                eprintln!("bogus PC ({:#010x})", pc);
                 total -= 1;
                 continue;
             }
-            // 20240215:
-            // I found linked functions have no size in the elf file
-            // which cause decoding errors. 
-            // Failure case 2:
-            // PC is not located in the function it hits.
-            // if pc > hit.address + hit.size {
-            //     // bogus value; ignore
-            //     total -= 1;
-            //     continue;
-            // }
-            // *******
 
             *stats.entry(hit.name).or_insert(0) += 1;
 
@@ -266,7 +217,6 @@ fn run() -> Result<(), failure::Error> {
             }
         }
     }
-
     if let Some(x) = matches.value_of("OUTPUT_FILE"){
 
         let mut output = File::create(x)?;
@@ -275,8 +225,19 @@ fn run() -> Result<(), failure::Error> {
         for sample in samples {
             if let Some(pc) = sample.pc() {
                 let key = format!("{pc:x}");
-                write!(output, "{}\t{}\n", key, sample_table[&key])
+
+                // 20241004: Updated version
+                // Some keys are missing in the table
+                // Thus, we need an additional handler
+                if let Some(inst) = sample_table.get(&key) {
+                    write!(output, "{}\t{}\n", key, inst)
                     .ok();
+                } else {
+                    write!(output, "{}\n", key).ok();
+                }
+                // 20241004: Older version
+                // write!(output, "{}\t{}\n", key, sample_table[&key])
+                //     .ok();
             }
         }
     }
