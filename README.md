@@ -372,9 +372,16 @@ $ tail -f 2.stim
 The answer is 42
 ```
 
+## References
+1. [Appendix D. Debug ITM and DWT Packet Protocol](https://developer.arm.com/documentation/ddi0403/d/Appendices/Debug-ITM-and-DWT-Packet-Protocol?lang=en)
+2. [Instruentation packet](https://developer.arm.com/documentation/ddi0403/d/Appendices/Debug-ITM-and-DWT-Packet-Protocol/Packet-descriptions/Instrumentation-packet?lang=en)
+3. [Stimulus registers](https://developer.arm.com/documentation/ddi0314/h/Instrumentation-Trace-Macrocell/Stimulus-registers?lang=en)
+
 ## License
 
 The code in this repository is distributed under the terms of both the MIT
 license and the Apache License (Version 2.0).
 
 See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
+
+

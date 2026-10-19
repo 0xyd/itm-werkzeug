@@ -150,12 +150,6 @@ fn run() -> Result<(), failure::Error> {
 
     // map samples to routines
     let mut stats = HashMap::new();
-    let mut needle = Routine {
-        address: 0,
-        name: "",
-        size: 0,
-    };
-    let min_pc = routines[0].address;
     let mut total = samples.len();
     let mut sleep = 0; // sleep cycles
 
@@ -164,55 +158,16 @@ fn run() -> Result<(), failure::Error> {
     for sample in samples {
         if let Some(pc) = sample.pc().map(u64::from) {
 
-            // Failure case 1:
-            // PC is lower than elf address.
-            if pc < min_pc {
-                // bogus value; ignore
-                eprintln!("bogus PC ({:#010x})", pc);
+            if let Some(hit) = routine_for_pc(&routines, pc, &ext_funcs) {
+                *stats.entry(hit.name).or_insert(0) += 1;
+
+                sample_table.insert(
+                    format!("{pc:x}"), hit.name.to_string());
+            } else {
+                eprintln!("unmapped PC ({pc:#010x})");
                 total -= 1;
                 continue;
             }
-
-            needle.address = pc;
-            let pos = routines.binary_search(&needle).unwrap_or_else(|e| e - 1);
-
-            let hit = &routines[pos];
-
-            // *******
-            // 20240216:
-            // This is upgraded version of the bogus case below.
-            // This case is bogus because the pc is outside the function section.
-            // However,
-            // the original case only does not consider external functions linked by linker
-            // These linked functions have no size information in the symbol table,
-            // thus the bogus state is always trigger.
-            // To address the issue, I add a new argument "EXTERNEL_FUNCTIONS"
-            // in which user can define the names of external functions.
-            // These external functions are excluded from this bogus case.
-            let boundary = hit.address + hit.size;
-            let over_boundary = if pc > boundary {true} else {false};
-
-            if over_boundary && !ext_funcs.contains(&hit.name) {
-                // bogus value; ignore
-                total -= 1;
-                continue;
-            }
-            // 20240215:
-            // I found linked functions have no size in the elf file
-            // which cause decoding errors. 
-            // Failure case 2:
-            // PC is not located in the function it hits.
-            // if pc > hit.address + hit.size {
-            //     // bogus value; ignore
-            //     total -= 1;
-            //     continue;
-            // }
-            // *******
-
-            *stats.entry(hit.name).or_insert(0) += 1;
-
-            sample_table.insert(
-                format!("{pc:x}"), hit.name.to_string());
         } else {
             sleep += 1;
         }
@@ -275,8 +230,11 @@ fn run() -> Result<(), failure::Error> {
         for sample in samples {
             if let Some(pc) = sample.pc() {
                 let key = format!("{pc:x}");
-                write!(output, "{}\t{}\n", key, sample_table[&key])
-                    .ok();
+                let mapped = sample_table.get(&key).ok_or_else(|| {
+                    failure::err_msg(format!(
+                        "PC {pc:#010x} has no function mapping"))
+                })?;
+                writeln!(output, "{key}\t{mapped}")?;
             }
         }
     }
@@ -290,6 +248,56 @@ struct Routine<'a> {
     address: u64,
     name: &'a str,
     size: u64,
+}
+
+fn routine_for_pc<'r, 'elf>(
+    routines: &'r [Routine<'elf>],
+    pc: u64,
+    external_functions: &[&str],
+) -> Option<&'r Routine<'elf>> {
+    if routines.is_empty() || pc < routines[0].address {
+        return None;
+    }
+
+    let needle = Routine {
+        address: pc,
+        name: "",
+        size: 0,
+    };
+    let mut position = routines
+        .binary_search(&needle)
+        .unwrap_or_else(|insertion| insertion - 1);
+
+    // binary_search may return any of several aliases at the same address.
+    // Select the last alias so the following slice starts at the next address.
+    while position + 1 < routines.len()
+        && routines[position + 1].address == routines[position].address
+    {
+        position += 1;
+    }
+
+    let hit = &routines[position];
+    if external_functions.contains(&hit.name) {
+        return Some(hit);
+    }
+
+    let boundary = if hit.size == 0 {
+        // Linked library functions can have zero-sized ELF symbols even though
+        // their instructions are present in .text. Bound such a function by
+        // the next distinct function symbol rather than rejecting its body.
+        routines[position + 1..]
+            .iter()
+            .find(|routine| routine.address > hit.address)
+            .map(|routine| routine.address)
+    } else {
+        hit.address.checked_add(hit.size)
+    };
+
+    match boundary {
+        Some(end) if pc < end => Some(hit),
+        None if pc == hit.address => Some(hit),
+        _ => None,
+    }
 }
 
 impl<'a> Ord for Routine<'a> {
@@ -307,6 +315,38 @@ impl<'a> PartialOrd for Routine<'a> {
 impl<'a> PartialEq for Routine<'a> {
     fn eq(&self, other: &Self) -> bool {
         self.address == other.address
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{routine_for_pc, Routine};
+
+    #[test]
+    fn zero_sized_function_extends_to_next_distinct_function() {
+        let routines = [
+            Routine { address: 0x1000, name: "memchr", size: 0 },
+            Routine { address: 0x1100, name: "next", size: 0x20 },
+        ];
+
+        assert_eq!(routine_for_pc(&routines, 0x1000, &[]).unwrap().name, "memchr");
+        assert_eq!(routine_for_pc(&routines, 0x10fe, &[]).unwrap().name, "memchr");
+        assert_eq!(routine_for_pc(&routines, 0x1100, &[]).unwrap().name, "next");
+    }
+
+    #[test]
+    fn sized_function_uses_a_half_open_address_range() {
+        let routines = [Routine { address: 0x1000, name: "sized", size: 4 }];
+
+        assert!(routine_for_pc(&routines, 0x1003, &[]).is_some());
+        assert!(routine_for_pc(&routines, 0x1004, &[]).is_none());
+    }
+
+    #[test]
+    fn external_function_exception_remains_available() {
+        let routines = [Routine { address: 0x1000, name: "external", size: 0 }];
+
+        assert!(routine_for_pc(&routines, 0x1010, &["external"]).is_some());
     }
 }
 
