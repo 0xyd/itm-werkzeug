@@ -230,11 +230,12 @@ fn run() -> Result<(), failure::Error> {
         for sample in samples {
             if let Some(pc) = sample.pc() {
                 let key = format!("{pc:x}");
-                let mapped = sample_table.get(&key).ok_or_else(|| {
-                    failure::err_msg(format!(
-                        "PC {pc:#010x} has no function mapping"))
-                })?;
-                writeln!(output, "{key}\t{mapped}")?;
+                // Unmapped PCs were already reported on stderr; keep their
+                // position in the output with the address alone.
+                match sample_table.get(&key) {
+                    Some(mapped) => writeln!(output, "{key}\t{mapped}")?,
+                    None => writeln!(output, "{key}")?,
+                }
             }
         }
     }
